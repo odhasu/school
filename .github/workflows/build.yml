@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -22,8 +25,9 @@ jobs:
       - name: Build EXE
         run: pyinstaller --onefile --windowed --name FocusTimer focus_timer.py
 
-      - name: Upload EXE
-        uses: actions/upload-artifact@v4
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: FocusTimer-Windows
-          path: dist/FocusTimer.exe
+          tag_name: latest
+          name: Focus Timer
+          files: dist/FocusTimer.exe
