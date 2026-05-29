@@ -1,0 +1,3 @@
+([('FocusTimer',
+   '/Users/oscargraafmans/Desktop/school copy/dist/FocusTimer',
+   'EXECUTABLE')],)
