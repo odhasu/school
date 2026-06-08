@@ -2,7 +2,10 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, colorchooser
 from PIL import Image, ImageTk, ImageFilter, ImageDraw
-import time, threading, os, platform, random
+import time, threading, os, platform, random, json
+from pathlib import Path
+
+TASKS_FILE = Path.home() / ".focus_timer_tasks.json"
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -78,7 +81,7 @@ class App(ctk.CTk):
         self.current_page  = "timer"
         self.tasks_visible = False
         self.focus_mode    = False
-        self.tasks         = []
+        self.tasks         = self._load_tasks()
         self.quote_index   = 0
         self._quote_job    = None
 
@@ -97,12 +100,14 @@ class App(ctk.CTk):
         self.react_start_t  = 0.0
 
         # memory
-        self.mem_board   = []
-        self.mem_matched = []
-        self.mem_btns    = []
-        self.mem_first   = None
-        self.mem_locked  = False
-        self.mem_moves   = 0
+        self.mem_board      = []
+        self.mem_matched    = []
+        self.mem_btns       = []
+        self.mem_first      = None
+        self.mem_locked     = False
+        self.mem_moves      = 0
+        self.mem_start_time = None
+        self._mem_timer_job = None
 
         self._build_ui()
         self._apply_preset(BG_PRESETS[0], init=True)
@@ -392,7 +397,7 @@ class App(ctk.CTk):
         # snake
         for i, (r,c) in enumerate(self.snake_body):
             color = "#5b8dee" if i == 0 else "#2a4a8a"
-            cv.create_rectangle(c*s+2, r*s+2, c*s+s-2, r*s+s-2,
+            cv.create_oval(c*s+2, r*s+2, c*s+s-2, r*s+s-2,
                 fill=color, outline="", width=0)
         # score overlay
         cv.create_text(6, 6, anchor="nw", text=f"{self.snake_score}",
@@ -498,6 +503,9 @@ class App(ctk.CTk):
         self.mem_moves_lbl = ctk.CTkLabel(hdr, text="Moves: 0",
             font=ctk.CTkFont(size=13, weight="bold"), text_color="#5b8dee")
         self.mem_moves_lbl.pack(side="left", padx=10)
+        self.mem_time_lbl = ctk.CTkLabel(hdr, text="Time: 0s",
+            font=ctk.CTkFont(size=13), text_color="#666666")
+        self.mem_time_lbl.pack(side="left", padx=10)
         self.mem_status_lbl = ctk.CTkLabel(hdr, text="Match all pairs!",
             font=ctk.CTkFont(size=12), text_color="#666666")
         self.mem_status_lbl.pack(side="left", padx=10)
@@ -519,6 +527,11 @@ class App(ctk.CTk):
         self.mem_moves  = 0
         self.mem_moves_lbl.configure(text="Moves: 0")
         self.mem_status_lbl.configure(text="Match all pairs!")
+        self.mem_start_time = None
+        if self._mem_timer_job:
+            self.after_cancel(self._mem_timer_job)
+            self._mem_timer_job = None
+        self.mem_time_lbl.configure(text="Time: 0s")
 
         icons = (MEM_ICONS * 2)
         random.shuffle(icons)
@@ -541,6 +554,12 @@ class App(ctk.CTk):
         btn = self.mem_btns[idx]
         if self.mem_first is not None and self.mem_first == idx:
             return
+
+        # start timer on very first card flip
+        if self.mem_start_time is None:
+            self.mem_start_time = time.monotonic()
+            self._mem_tick_timer()
+
         btn.configure(text=self.mem_board[idx], fg_color="#2a2a4e")
 
         if self.mem_first is None:
@@ -556,6 +575,12 @@ class App(ctk.CTk):
                 self.mem_btns[first].configure(fg_color="#1a3a1a", text_color="#44cc44")
                 btn.configure(fg_color="#1a3a1a", text_color="#44cc44")
                 if all(self.mem_matched):
+                    # stop timer on win
+                    if self._mem_timer_job:
+                        self.after_cancel(self._mem_timer_job)
+                        self._mem_timer_job = None
+                    elapsed = int(time.monotonic() - self.mem_start_time)
+                    self.mem_time_lbl.configure(text=f"Time: {elapsed}s")
                     self.mem_status_lbl.configure(
                         text=f"You won in {self.mem_moves} moves! 🎉")
             else:
@@ -568,6 +593,13 @@ class App(ctk.CTk):
         if not self.mem_matched[b]:
             self.mem_btns[b].configure(text="?", fg_color="#1a1a2e")
         self.mem_locked = False
+
+    def _mem_tick_timer(self):
+        if self.mem_start_time is None or all(self.mem_matched):
+            return
+        elapsed = int(time.monotonic() - self.mem_start_time)
+        self.mem_time_lbl.configure(text=f"Time: {elapsed}s")
+        self._mem_timer_job = self.after(1000, self._mem_tick_timer)
 
     # ── GAME NAVIGATION ──────────────────────────────────────────────
     def _show_game(self, key):
@@ -640,7 +672,7 @@ class App(ctk.CTk):
 
     def _update_display(self):
         self.timer_lbl.configure(text=self._fmt(self.remaining))
-        ratio = self.remaining / self.total_seconds if self.total_seconds else 0
+        ratio = min(1.0, self.remaining / self.total_seconds) if self.total_seconds else 0
         self.progress.set(ratio)
         tc = "#ff6b6b" if self.remaining<=60 and self.running else \
              "#ffcc00" if self.remaining<=300 and self.running else \
@@ -707,6 +739,9 @@ class App(ctk.CTk):
                 font=ctk.CTkFont(size=12), text_color="#5b8dee")
             d.pack(side="left", padx=2)
             self.session_dots.append(d)
+        if self.session_count > 0:
+            ctk.CTkLabel(self.dot_frame, text=f"  {self.session_count} done",
+                font=ctk.CTkFont(size=11), text_color="#444444").pack(side="left")
 
     # ══════════════════════════════════════════════════════════════════
     # POMODORO
@@ -772,6 +807,24 @@ class App(ctk.CTk):
     # TASKS
     # ══════════════════════════════════════════════════════════════════
 
+    def _load_tasks(self):
+        try:
+            data = json.loads(TASKS_FILE.read_text())
+            tasks = []
+            for item in data:
+                done = tk.BooleanVar(value=item.get("done", False))
+                tasks.append({"text": item["text"], "done": done, "row": None})
+            return tasks
+        except Exception:
+            return []
+
+    def _save_tasks(self):
+        try:
+            data = [{"text": t["text"], "done": t["done"].get()} for t in self.tasks]
+            TASKS_FILE.write_text(json.dumps(data))
+        except Exception:
+            pass
+
     def _toggle_tasks(self):
         self.tasks_visible = not self.tasks_visible
         if self.tasks_visible:
@@ -823,6 +876,7 @@ class App(ctk.CTk):
         done = tk.BooleanVar(value=False)
         task = {"text": text, "done": done, "row": None}
         self.tasks.append(task)
+        self._save_tasks()
         if self.tasks_visible:
             self._render_task(task)
 
@@ -858,10 +912,12 @@ class App(ctk.CTk):
             for c in row.winfo_children():
                 if isinstance(c, ctk.CTkCheckBox):
                     c.configure(text_color="#bbbbbb")
+        self._save_tasks()
 
     def _del_task(self, task, row):
         self.tasks = [t for t in self.tasks if t is not task]
         row.destroy()
+        self._save_tasks()
 
     def _clear_done(self):
         remaining = []
@@ -871,6 +927,7 @@ class App(ctk.CTk):
             else:
                 remaining.append(t)
         self.tasks = remaining
+        self._save_tasks()
 
     # ══════════════════════════════════════════════════════════════════
     # BACKGROUND
@@ -1033,8 +1090,12 @@ class App(ctk.CTk):
         if a > 100:
             self._quote_job = self.after(8000, self._fade_out_quote)
             return
-        v = int(170 * a / 100)
-        self.quote_lbl.configure(text_color=f"#{v:02x}{v:02x}{v:02x}")
+        if self.light_bg:
+            v = int(0x50 * a / 100)
+            self.quote_lbl.configure(text_color=f"#{v:02x}{v:02x}{v:02x}")
+        else:
+            v = int(0xaa * a / 100)
+            self.quote_lbl.configure(text_color=f"#{v:02x}{v:02x}{v:02x}")
         self.after(18, lambda: self._fade_in_quote(a+5))
 
     def _fade_out_quote(self, a=100):
@@ -1043,8 +1104,12 @@ class App(ctk.CTk):
             self.quote_lbl.configure(text=QUOTES[self.quote_index])
             self._fade_in_quote()
             return
-        v = int(170 * a / 100)
-        self.quote_lbl.configure(text_color=f"#{v:02x}{v:02x}{v:02x}")
+        if self.light_bg:
+            v = int(0x50 * a / 100)
+            self.quote_lbl.configure(text_color=f"#{v:02x}{v:02x}{v:02x}")
+        else:
+            v = int(0xaa * a / 100)
+            self.quote_lbl.configure(text_color=f"#{v:02x}{v:02x}{v:02x}")
         self.after(18, lambda: self._fade_out_quote(a-5))
 
     # ══════════════════════════════════════════════════════════════════
@@ -1052,12 +1117,22 @@ class App(ctk.CTk):
     # ══════════════════════════════════════════════════════════════════
 
     def _on_key(self, e):
+        key = e.keysym
+
+        # space: toggle timer on timer page, or trigger reaction click on games page
+        if key == "space":
+            if self.current_page == "timer":
+                self._toggle_timer()
+                return
+            elif self.current_page == "games" and self.active_game == "react":
+                self._react_click()
+                return
+
         if not self.snake_running or self.current_page != "games" \
                 or self.active_game != "snake":
             return
         dirs = {"Up":(-1,0),"Down":(1,0),"Left":(0,-1),"Right":(0,1),
                 "w":(-1,0),"s":(1,0),"a":(0,-1),"d":(0,1)}
-        key = e.keysym
         if key in dirs:
             nd = dirs[key]
             # prevent 180 reverse
