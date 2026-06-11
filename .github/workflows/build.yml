@@ -25,6 +25,11 @@ jobs:
       - name: Build EXE
         run: pyinstaller --onefile --windowed --name FocusTimer focus_timer.py
 
+      - name: Move latest tag to current commit
+        run: |
+          git tag -f latest
+          git push origin latest --force
+
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
