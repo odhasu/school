@@ -5,7 +5,6 @@ from PIL import Image, ImageTk, ImageFilter, ImageDraw
 import time, threading, os, platform, random, json, datetime
 from pathlib import Path
 
-TASKS_FILE = Path.home() / ".focus_timer_tasks.json"
 PLAN_FILE  = Path.home() / ".focus_timer_plan.json"
 
 ctk.set_appearance_mode("dark")
@@ -43,10 +42,6 @@ BG_PRESETS = [
     {"name": "Pure White", "c1": "#f8f8f8", "c2": "#ffffff", "light": True},
 ]
 
-POMO_SEQ    = [25*60, 5*60, 25*60, 5*60, 25*60, 5*60, 25*60, 15*60]
-POMO_LABELS = ["Focus","Short Break","Focus","Short Break",
-               "Focus","Short Break","Focus","Long Break!"]
-
 MEM_ICONS = ["🎯","🎨","🎮","🎵","🌟","🚀","🦄","🎃"]
 
 SNAKE_ROWS, SNAKE_COLS, SNAKE_CELL = 18, 24, 18
@@ -67,10 +62,6 @@ class App(ctk.CTk):
         self.session_count = 0
         self.session_dots  = []
 
-        # pomodoro
-        self.pomo_on   = False
-        self.pomo_step = 0
-
         # bg
         self.bg_src     = None
         self.bg_photo   = None
@@ -80,12 +71,11 @@ class App(ctk.CTk):
 
         # ui
         self.current_page  = "timer"
-        self.tasks_visible = False
         self.focus_mode    = False
-        self.tasks         = self._load_tasks()
         self.plan_tasks    = self._load_plan_tasks()
         self.quote_index   = 0
         self._quote_job    = None
+        self._notif_job    = None
 
         # snake
         self.snake_running  = False
@@ -171,12 +161,6 @@ class App(ctk.CTk):
             command=self._open_bg_panel)
         self.bg_btn.pack(side="right", padx=(0,5))
 
-        self.tasks_btn = ctk.CTkButton(top, text="☑ Tasks",
-            font=ctk.CTkFont(size=12), width=72, height=30,
-            fg_color="#1e1e1e", hover_color="#2e2e2e",
-            command=self._toggle_tasks)
-        self.tasks_btn.pack(side="right", padx=(0,5))
-
         # ── body ────────────────────────────────────────────────────
         body = ctk.CTkFrame(wrap, fg_color="transparent")
         body.pack(expand=True, fill="both", padx=22, pady=(6, 12))
@@ -184,10 +168,6 @@ class App(ctk.CTk):
         # content (swappable pages)
         self.content = ctk.CTkFrame(body, fg_color="transparent")
         self.content.pack(side="left", expand=True, fill="both")
-
-        # task side panel (hidden initially)
-        self.task_panel = ctk.CTkFrame(body, fg_color="#0d0d1a",
-            corner_radius=12, border_width=1, border_color="#1e1e3a", width=210)
 
         # ── build both pages ────────────────────────────────────────
         self.timer_page = ctk.CTkFrame(self.content, fg_color="transparent")
@@ -206,10 +186,6 @@ class App(ctk.CTk):
             font=ctk.CTkFont("Segoe UI", 14, slant="italic"),
             text_color="#888888", wraplength=460)
         self.quote_lbl.pack(pady=(18, 0))
-
-        self.pomo_lbl = ctk.CTkLabel(p, text="",
-            font=ctk.CTkFont(size=11), text_color="#5b8dee")
-        self.pomo_lbl.pack(pady=(2, 0))
 
         self.timer_lbl = ctk.CTkLabel(p, text=self._fmt(self.remaining),
             font=ctk.CTkFont("Segoe UI", 92, "bold"), text_color="#ffffff")
@@ -252,12 +228,6 @@ class App(ctk.CTk):
             font=ctk.CTkFont(size=13), width=100, height=42,
             fg_color="#1e1e1e", hover_color="#2e2e2e", corner_radius=21,
             command=self._reset_timer).pack(side="left", padx=7)
-
-        self.pomo_btn = ctk.CTkButton(ctrl, text="🍅 Pomodoro",
-            font=ctk.CTkFont(size=13), width=118, height=42,
-            fg_color="#1e1e1e", hover_color="#2e1818", corner_radius=21,
-            command=self._toggle_pomodoro)
-        self.pomo_btn.pack(side="left", padx=7)
 
         # session dots
         self.dot_frame = ctk.CTkFrame(p, fg_color="transparent")
@@ -678,7 +648,7 @@ class App(ctk.CTk):
     def _reset_timer(self):
         self._stop_event.set()
         self.running = False
-        self.remaining = POMO_SEQ[self.pomo_step] if self.pomo_on else self.total_seconds
+        self.remaining = self.total_seconds
         self.after(0, self._update_display)
         self.start_btn.configure(text="▶  Start")
 
@@ -715,8 +685,6 @@ class App(ctk.CTk):
         self._refresh_dots()
         self._flash_done()
         self._play_sound()
-        if self.pomo_on:
-            self.after(2000, self._pomo_advance)
 
     def _flash_done(self, n=0):
         if n >= 6:
@@ -725,9 +693,6 @@ class App(ctk.CTk):
         self.after(350, lambda: self._flash_done(n+1))
 
     def _set_preset(self, mins):
-        self.pomo_on = False
-        self.pomo_btn.configure(fg_color="#1e1e1e")
-        self.pomo_lbl.configure(text="")
         self.total_seconds = mins * 60
         self.remaining = self.total_seconds
         self._stop_event.set()
@@ -744,9 +709,6 @@ class App(ctk.CTk):
             pass
 
     def _set_preset_secs(self, secs):
-        self.pomo_on = False
-        self.pomo_btn.configure(fg_color="#1e1e1e")
-        self.pomo_lbl.configure(text="")
         self.total_seconds = secs
         self.remaining = secs
         self._stop_event.set()
@@ -766,38 +728,6 @@ class App(ctk.CTk):
         if self.session_count > 0:
             ctk.CTkLabel(self.dot_frame, text=f"  {self.session_count} done",
                 font=ctk.CTkFont(size=11), text_color="#444444").pack(side="left")
-
-    # ══════════════════════════════════════════════════════════════════
-    # POMODORO
-    # ══════════════════════════════════════════════════════════════════
-
-    def _toggle_pomodoro(self):
-        self.pomo_on = not self.pomo_on
-        if self.pomo_on:
-            self.pomo_step = 0
-            self.pomo_btn.configure(fg_color="#7a1515", hover_color="#8a2525")
-            self._stop_event.set()
-            self.running = False
-            self.start_btn.configure(text="▶  Start")
-            self._pomo_apply()
-        else:
-            self.pomo_btn.configure(fg_color="#1e1e1e", hover_color="#2e1818")
-            self.pomo_lbl.configure(text="")
-
-    def _pomo_apply(self):
-        secs = POMO_SEQ[self.pomo_step % len(POMO_SEQ)]
-        lbl  = POMO_LABELS[self.pomo_step % len(POMO_LABELS)]
-        self.total_seconds = secs
-        self.remaining     = secs
-        self.pomo_lbl.configure(
-            text=f"🍅 {lbl}  ({self.pomo_step+1}/{len(POMO_SEQ)})")
-        self._update_display()
-
-    def _pomo_advance(self):
-        self.pomo_step = (self.pomo_step + 1) % len(POMO_SEQ)
-        self._pomo_apply()
-        lbl = POMO_LABELS[self.pomo_step % len(POMO_LABELS)]
-        self._banner(f"Next: {lbl} — press Start")
 
     def _banner(self, msg):
         b = ctk.CTkLabel(self, text=msg,
@@ -826,132 +756,6 @@ class App(ctk.CTk):
             except Exception:
                 self.after(0, self.bell)
         threading.Thread(target=_go, daemon=True).start()
-
-    # ══════════════════════════════════════════════════════════════════
-    # TASKS
-    # ══════════════════════════════════════════════════════════════════
-
-    def _load_tasks(self):
-        try:
-            data = json.loads(TASKS_FILE.read_text())
-            tasks = []
-            for item in data:
-                done = tk.BooleanVar(value=item.get("done", False))
-                tasks.append({"text": item["text"], "done": done, "row": None})
-            return tasks
-        except Exception:
-            return []
-
-    def _save_tasks(self):
-        try:
-            data = [{"text": t["text"], "done": t["done"].get()} for t in self.tasks]
-            TASKS_FILE.write_text(json.dumps(data))
-        except Exception:
-            pass
-
-    def _toggle_tasks(self):
-        self.tasks_visible = not self.tasks_visible
-        if self.tasks_visible:
-            self.task_panel.pack(side="right", fill="y", padx=(8,0))
-            self._build_task_panel()
-            self.tasks_btn.configure(fg_color="#5b8dee")
-        else:
-            for w in self.task_panel.winfo_children():
-                w.destroy()
-            self.task_panel.pack_forget()
-            self.tasks_btn.configure(fg_color="#1e1e1e")
-
-    def _build_task_panel(self):
-        ctk.CTkLabel(self.task_panel, text="MY TASKS",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="#3a3a6a").pack(pady=(14,6))
-
-        add_row = ctk.CTkFrame(self.task_panel, fg_color="transparent")
-        add_row.pack(fill="x", padx=10, pady=(0,8))
-        self.task_ent = ctk.CTkEntry(add_row, placeholder_text="Add task...",
-            font=ctk.CTkFont(size=12), fg_color="#0d0d14",
-            border_color="#1e1e3a", height=30)
-        self.task_ent.pack(side="left", expand=True, fill="x", padx=(0,5))
-        self.task_ent.bind("<Return>", lambda e: self._add_task())
-        ctk.CTkButton(add_row, text="+", width=30, height=30,
-            font=ctk.CTkFont(size=16), fg_color="#5b8dee",
-            hover_color="#3a6ccc", corner_radius=8,
-            command=self._add_task).pack(side="left")
-
-        self.task_scroll = ctk.CTkScrollableFrame(self.task_panel,
-            fg_color="transparent",
-            scrollbar_button_color="#1e1e3a")
-        self.task_scroll.pack(expand=True, fill="both", padx=6, pady=(0,6))
-
-        # re-render existing tasks
-        for t in self.tasks:
-            self._render_task(t)
-
-        ctk.CTkButton(self.task_panel, text="Clear done ✕",
-            font=ctk.CTkFont(size=11), height=26,
-            fg_color="#1e1e1e", hover_color="#2e1e1e",
-            command=self._clear_done).pack(pady=(0,10))
-
-    def _add_task(self):
-        text = self.task_ent.get().strip()
-        if not text:
-            return
-        self.task_ent.delete(0, "end")
-        done = tk.BooleanVar(value=False)
-        task = {"text": text, "done": done, "row": None}
-        self.tasks.append(task)
-        self._save_tasks()
-        if self.tasks_visible:
-            self._render_task(task)
-
-    def _render_task(self, task):
-        row = ctk.CTkFrame(self.task_scroll, fg_color="#0f0f1e",
-            corner_radius=8)
-        row.pack(fill="x", pady=2, padx=2)
-        task["row"] = row
-
-        cb = ctk.CTkCheckBox(row, text=task["text"],
-            font=ctk.CTkFont(size=12), text_color="#bbbbbb",
-            fg_color="#5b8dee", hover_color="#3a6ccc",
-            border_color="#2a2a4a",
-            variable=task["done"], wraplength=130,
-            command=lambda t=task, r=row: self._task_toggle(t, r))
-        cb.pack(side="left", padx=(8,4), pady=6, expand=True, anchor="w")
-
-        ctk.CTkButton(row, text="×", width=22, height=22,
-            font=ctk.CTkFont(size=13),
-            fg_color="transparent", hover_color="#2a1a1a",
-            text_color="#444444",
-            command=lambda t=task, r=row: self._del_task(t, r)
-        ).pack(side="right", padx=4)
-
-    def _task_toggle(self, task, row):
-        if task["done"].get():
-            row.configure(fg_color="#0a0a10")
-            for c in row.winfo_children():
-                if isinstance(c, ctk.CTkCheckBox):
-                    c.configure(text_color="#333333")
-        else:
-            row.configure(fg_color="#0f0f1e")
-            for c in row.winfo_children():
-                if isinstance(c, ctk.CTkCheckBox):
-                    c.configure(text_color="#bbbbbb")
-        self._save_tasks()
-
-    def _del_task(self, task, row):
-        self.tasks = [t for t in self.tasks if t is not task]
-        row.destroy()
-        self._save_tasks()
-
-    def _clear_done(self):
-        remaining = []
-        for t in self.tasks:
-            if t["done"].get() and t["row"]:
-                t["row"].destroy()
-            else:
-                remaining.append(t)
-        self.tasks = remaining
-        self._save_tasks()
 
     # ══════════════════════════════════════════════════════════════════
     # BACKGROUND
@@ -1098,7 +902,6 @@ class App(ctk.CTk):
         self.nav_timer.configure(state="disabled")
         self.focus_btn.configure(text="⬜ Exit Focus", fg_color="#5b8dee", hover_color="#3a6ccc")
         self.bg_btn.configure(state="disabled")
-        self.tasks_btn.configure(state="disabled")
         self.title_lbl.configure(text="")
         self._redraw_bg()
 
@@ -1111,7 +914,6 @@ class App(ctk.CTk):
         self.nav_timer.configure(state="normal")
         self.focus_btn.configure(text="⬛ Focus", fg_color="#1e1e1e", hover_color="#2e2e2e")
         self.bg_btn.configure(state="normal")
-        self.tasks_btn.configure(state="normal")
         self.title_lbl.configure(text="FOCUS TIMER")
         self._redraw_bg()
 
@@ -1466,15 +1268,19 @@ class App(ctk.CTk):
                     task["notified"] = True
                     self._save_plan_tasks()
                     self._banner(f"⏰ Task starting: {task['text']}")
-        self.after(30000, self._check_plan_notifications)
+        self._notif_job = self.after(30000, self._check_plan_notifications)
 
     def on_close(self):
         self._stop_event.set()
         self.snake_running = False
-        if self._snake_job:
-            self.after_cancel(self._snake_job)
-        if self._react_job:
-            self.after_cancel(self._react_job)
+        for job in [self._snake_job, self._react_job, self._quote_job,
+                    self._mem_timer_job, self._notif_job]:
+            if job:
+                try:
+                    self.after_cancel(job)
+                except Exception:
+                    pass
+        self.quit()
         self.destroy()
 
 
