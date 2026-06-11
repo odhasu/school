@@ -1,3 +1,18 @@
+# ============================================================
+# Focus Timer – hoofdbestand
+# Gemaakt door: Oscar Graafmans
+# Vak: Informatica
+#
+# Dit programma is een focustimer met drie pagina's:
+#   1. Timer   – stel een tijd in en tel af
+#   2. Games   – Snake, reactietest en geheugenspel
+#   3. Plan    – weekplanner met taken per dag
+#
+# De interface is gebouwd met CustomTkinter.
+# De achtergrond wordt gegenereerd via Pillow (PIL).
+# De timer loopt in een aparte thread zodat de app niet vastloopt.
+# ============================================================
+
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, colorchooser
@@ -5,11 +20,14 @@ from PIL import Image, ImageTk, ImageFilter, ImageDraw
 import time, threading, os, platform, random, json, datetime
 from pathlib import Path
 
+# Bestand waar de geplande taken worden opgeslagen
 PLAN_FILE  = Path.home() / ".focus_timer_plan.json"
 
+# Donker thema instellen voor de hele app
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+# Motiverende quotes die op de timerpagina rouleren
 QUOTES = [
     "Stay focused. You got this.",
     "One step at a time.",
@@ -23,6 +41,8 @@ QUOTES = [
     "Breathe. Focus. Execute.",
 ]
 
+# Achtergrond-presets: elke preset heeft twee kleuren (c1 boven, c2 onder)
+# en een 'light' vlag zodat de tekst meeschakelt (donker op lichte bg)
 BG_PRESETS = [
     # ── Dark gradients ──
     {"name": "Night Sky",  "c1": "#0f0c29", "c2": "#302b63", "light": False},
@@ -42,25 +62,28 @@ BG_PRESETS = [
     {"name": "Pure White", "c1": "#f8f8f8", "c2": "#ffffff", "light": True},
 ]
 
+# Icoontjes voor het geheugenspel (8 paren = 16 kaarten)
 MEM_ICONS = ["🎯","🎨","🎮","🎵","🌟","🚀","🦄","🎃"]
 
+# Afmetingen van het Snake-speelveld (rijen, kolommen, celgrootte in pixels)
 SNAKE_ROWS, SNAKE_COLS, SNAKE_CELL = 18, 24, 18
 
 
 class App(ctk.CTk):
+    # Hoofdklasse van de app. Erft van ctk.CTk (het hoofdvenster).
     def __init__(self):
         super().__init__()
         self.title("Focus Timer")
         self.geometry("1000x690")
         self.minsize(760, 560)
 
-        # timer state
-        self.total_seconds = 25*60
+        # --- Timer status ---
+        self.total_seconds = 25*60   # standaard 25 minuten
         self.remaining     = self.total_seconds
         self.running       = False
-        self._stop_event   = threading.Event()
-        self.session_count = 0
-        self.session_dots  = []
+        self._stop_event   = threading.Event()  # signaal om de timer-thread te stoppen
+        self.session_count = 0   # bijhouden hoeveel sessies zijn afgerond
+        self.session_dots  = []  # lijst van dot-widgets onderaan de timer
 
         # bg
         self.bg_src     = None
@@ -330,6 +353,9 @@ class App(ctk.CTk):
             self._snake_loop()
 
     def _snake_loop(self):
+        # Één stap van het Snake-spel: beweeg het hoofd, check botsing,
+        # check of er eten is opgegeten, teken opnieuw.
+        # De snelheid neemt toe naarmate de score hoger wordt.
         if not self.snake_running:
             return
         dr, dc = self.snake_next_dir
@@ -653,6 +679,11 @@ class App(ctk.CTk):
         self.start_btn.configure(text="▶  Start")
 
     def _tick(self):
+        # Deze functie draait in een aparte thread.
+        # Hij telt elke seconde één af van self.remaining.
+        # time.monotonic() wordt gebruikt omdat die nooit terugspringt.
+        # self.after(0, ...) stuurt de UI-update naar de hoofdthread,
+        # want Tkinter mag alleen vanuit de hoofdthread worden aangepast.
         last = time.monotonic()
         while not self._stop_event.is_set() and self.remaining > 0:
             now = time.monotonic()
@@ -774,6 +805,8 @@ class App(ctk.CTk):
         self._set_canvas_bg(self._make_gradient(w, h, preset["c1"], preset["c2"]))
 
     def _make_gradient(self, w, h, c1, c2):
+        # Genereert een kleurverloop-afbeelding van boven (c1) naar onder (c2).
+        # Per rij pixels wordt een kleur berekend via lineaire interpolatie.
         img = Image.new("RGB", (max(w,1), max(h,1)))
         draw = ImageDraw.Draw(img)
         r1,g1,b1 = self._h2rgb(c1)
@@ -918,6 +951,8 @@ class App(ctk.CTk):
         self._redraw_bg()
 
     def _show_math_exit(self):
+        # Om de focusmodus te verlaten moet de gebruiker een rekensommetje oplossen.
+        # Dit voorkomt dat je per ongeluk de focusmodus verlaat.
         import random as _r
         a = _r.randint(2, 9)
         b = _r.randint(2, 9)
@@ -1259,6 +1294,8 @@ class App(ctk.CTk):
         card.destroy()
 
     def _check_plan_notifications(self):
+        # Controleert elke 30 seconden of een taak nu moet beginnen.
+        # Als de starttijd overeenkomt met de huidige tijd, verschijnt er een banner.
         now = datetime.datetime.now()
         today_idx = now.weekday()
         now_str = now.strftime("%H:%M")
@@ -1271,6 +1308,9 @@ class App(ctk.CTk):
         self._notif_job = self.after(30000, self._check_plan_notifications)
 
     def on_close(self):
+        # Wordt aangeroepen als de gebruiker het venster sluit.
+        # Alle actieve achtergrondprocessen worden eerst gestopt,
+        # anders probeert de app nog dingen te updaten in een gesloten venster (crash).
         self._stop_event.set()
         self.snake_running = False
         for job in [self._snake_job, self._react_job, self._quote_job,
